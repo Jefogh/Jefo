@@ -1,6 +1,8 @@
-flet
-httpx
-easyocr
-numpy
-opencv-python-headless
-Pillow
+flet==0.4.0
+httpx==0.24.1
+easyocr==1.7.0
+numpy==1.23.5
+opencv-python-headless==4.8.0.74
+Pillow==9.5.0
+buildozer==1.4.0
+cython==0.29.36
