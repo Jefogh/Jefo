@@ -1,6 +1,6 @@
 flet
-opencv-python
-numpy
-Pillow
 httpx
 easyocr
+numpy
+opencv-python-headless
+Pillow
