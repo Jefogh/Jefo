@@ -1,120 +1,99 @@
 import base64
 import random
 import time
+import asyncio
 import threading
-import tkinter as tk
-from tkinter import simpledialog, messagebox, Scrollbar, filedialog
+import flet as ft
 import cv2
 import numpy as np
-from PIL import Image, ImageTk
+from PIL import Image
 import httpx
 import easyocr
 import re
 import json
 import os
+from io import BytesIO
 
 # تحسين إعدادات EasyOCR لتسريع العملية
-reader = easyocr.Reader(['en'], gpu=False, model_storage_directory=os.path.join(os.getcwd(), "model"), download_enabled=True)  # استخدام الـ CPU وتعطيل استخدام الـ GPU لتجنب تعطل الجهاز
+reader = easyocr.Reader(['en'], gpu=True, model_storage_directory=os.path.join(os.getcwd(), "model"), download_enabled=True)
 
-class CaptchaApp:
-    def __init__(self, root):
-        self.root = root
-        self.root.title("Captcha Solver")
-        self.root.geometry("1000x600")
-
+class CaptchaApp(ft.UserControl):
+    def __init__(self):
+        super().__init__()
         self.accounts = {}
         self.background_images = []
         self.last_status_code = None
         self.last_response_text = None
-        self.captcha_frame = None
         self.corrections = self.load_corrections()
 
-        self.canvas = None
-        self.scrollbar = None
-        self.main_frame = None
-        self.add_account_button = None
-        self.upload_background_button = None
+    def build(self):
+        """Build the main user interface with Flet components."""
+        self.account_column = ft.Column()
+        
+        self.add_account_button = ft.ElevatedButton(text="Add Account", on_click=self.add_account)
+        self.upload_background_button = ft.ElevatedButton(text="Upload Backgrounds", on_click=self.upload_backgrounds)
 
-        self.setup_ui()
+        return ft.Column([
+            self.add_account_button,
+            self.upload_background_button,
+            self.account_column
+        ])
 
-    def setup_ui(self):
-        """Set up the main user interface."""
-        self.canvas = tk.Canvas(self.root)
-        self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-
-        self.scrollbar = Scrollbar(self.root, orient=tk.VERTICAL, command=self.canvas.yview)
-        self.scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self.canvas.configure(yscrollcommand=self.scrollbar.set)
-
-        self.main_frame = tk.Frame(self.canvas)
-        self.main_frame.pack(fill=tk.BOTH, expand=True)
-
-        self.canvas.create_window((0, 0), window=self.main_frame, anchor=tk.NW)
-        self.main_frame.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
-
-        self.create_widgets()
-
-    def create_widgets(self):
-        """Create UI widgets for user interactions."""
-        self.add_account_button = tk.Button(self.main_frame, text="Add Account", command=self.add_account)
-        self.add_account_button.pack()
-
-        self.upload_background_button = tk.Button(
-            self.main_frame, text="Upload Backgrounds", command=self.upload_backgrounds
-        )
-        self.upload_background_button.pack()
-
-    def upload_backgrounds(self):
+    async def upload_backgrounds(self, e):
         """Upload background images for processing."""
-        background_paths = filedialog.askopenfilenames(
-            title="Select Background Images",
-            filetypes=[("Image files", "*.jpg *.png *.jpeg")]
-        )
-        if background_paths:
-            self.background_images = [cv2.imread(path) for path in background_paths]
-            messagebox.showinfo("Success", f"{len(self.background_images)} background images uploaded successfully!")
+        background_files = await self.page.dialog_get_open_files(allowed_extensions=["jpg", "png", "jpeg"])
+        if background_files:
+            self.background_images = [cv2.imread(file.path) for file in background_files]
+            ft.MessageDialog(title="Success", content=f"{len(self.background_images)} background images uploaded successfully!").open()
 
-    def add_account(self):
+    def add_account(self, e):
         """Add a new account for captcha solving."""
-        username = simpledialog.askstring("Input", "Enter Username:")
-        password = simpledialog.askstring("Input", "Enter Password:", show='*')
+        async def async_add_account():
+            username = await self.page.dialog_get_input(title="Enter Username")
+            password = await self.page.dialog_get_input(title="Enter Password", password=True)
 
-        if username and password:
-            user_agent = self.generate_user_agent()
-            session = self.create_session(user_agent)
-            if self.login(username, password, session):
-                self.accounts[username] = {
-                    'password': password,
-                    'user_agent': user_agent,
-                    'session': session,
-                    'captcha_id1': None,
-                    'captcha_id2': None
-                }
-                self.create_account_ui(username)
-            else:
-                messagebox.showerror("Error", f"Failed to login for user {username}")
+            if username and password:
+                user_agent = self.generate_user_agent()
+                session = self.create_session(user_agent)
+                if await self.login(username, password, session):
+                    self.accounts[username] = {
+                        'password': password,
+                        'user_agent': user_agent,
+                        'session': session,
+                        'captcha_id1': None,
+                        'captcha_id2': None
+                    }
+                    self.create_account_ui(username)
+                else:
+                    ft.MessageDialog(title="Error", content=f"Failed to login for user {username}").open()
+
+        asyncio.create_task(async_add_account())
 
     def create_account_ui(self, username):
         """Create the UI elements for a specific account."""
-        account_frame = tk.Frame(self.main_frame)
-        account_frame.pack(fill=tk.X, padx=10, pady=5)
+        account_row = ft.Row()
+        account_row.controls.append(ft.Text(f"Account: {username}"))
 
-        tk.Label(account_frame, text=f"Account: {username}").pack(side=tk.LEFT)
+        captcha_id1 = ft.TextField(label="Captcha ID 1", on_submit=lambda e: self.update_captcha_id(username, e.control.value, 'captcha_id1'))
+        captcha_id2 = ft.TextField(label="Captcha ID 2", on_submit=lambda e: self.update_captcha_id(username, e.control.value, 'captcha_id2'))
+        
+        account_row.controls.append(captcha_id1)
+        account_row.controls.append(captcha_id2)
 
-        captcha_id1 = simpledialog.askstring("Input", "Enter Captcha ID 1:")
-        captcha_id2 = simpledialog.askstring("Input", "Enter Captcha ID 2:")
-        self.accounts[username]['captcha_id1'] = captcha_id1
-        self.accounts[username]['captcha_id2'] = captcha_id2
+        cap1_button = ft.ElevatedButton(text="Cap 1", on_click=lambda e: self.request_captcha(username, captcha_id1.value))
+        cap2_button = ft.ElevatedButton(text="Cap 2", on_click=lambda e: self.request_captcha(username, captcha_id2.value))
+        request_all_button = ft.ElevatedButton(text="Request All", on_click=lambda e: self.request_all_captchas(username))
+        
+        account_row.controls.append(cap1_button)
+        account_row.controls.append(cap2_button)
+        account_row.controls.append(request_all_button)
 
-        tk.Button(account_frame, text="Cap 1", command=lambda: threading.Thread(target=self.request_captcha, args=(username, captcha_id1)).start()).pack(
-            side=tk.LEFT, padx=8
-        )
-        tk.Button(account_frame, text="Cap 2", command=lambda: threading.Thread(target=self.request_captcha, args=(username, captcha_id2)).start()).pack(
-            side=tk.LEFT, padx=8
-        )
-        tk.Button(account_frame, text="Request All", command=lambda: threading.Thread(target=self.request_all_captchas, args=(username,)).start()).pack(
-            side=tk.LEFT, padx=8
-        )
+        self.account_column.controls.append(account_row)
+        self.update()
+
+    def update_captcha_id(self, username, value, captcha_key):
+        """Update captcha IDs in the account dictionary."""
+        self.accounts[username][captcha_key] = value
 
     def request_all_captchas(self, username):
         """Request all captchas for the specified account."""
@@ -126,7 +105,7 @@ class CaptchaApp:
         """Create an HTTP session with custom headers."""
         return httpx.Client(headers=CaptchaApp.generate_headers(user_agent))
 
-    def login(self, username, password, session, retry_count=3):
+    async def login(self, username, password, session, retry_count=3):
         """Attempt to log in to the account."""
         login_url = 'https://api.ecsc.gov.sy:8080/secure/auth/login'
         login_data = {'username': username, 'password': password}
@@ -134,64 +113,66 @@ class CaptchaApp:
         for attempt in range(retry_count):
             try:
                 print(f"Attempt {attempt + 1} to log in for user {username}")
-                response = session.post(login_url, json=login_data)
+                response = await session.post(login_url, json=login_data)
                 print(f"HTTP Status Code: {response.status_code}")
                 print(f"Response Text: {response.text}")
 
                 if response.status_code == 200:
                     return True
                 elif response.status_code in {401, 402, 403}:
-                    messagebox.showerror("Error", f"Error {response.status_code}. Retrying...")
+                    ft.MessageDialog(title="Error", content=f"Error {response.status_code}. Retrying...").open()
                 else:
                     print(f"Unexpected error code: {response.status_code}")
                     return False
             except httpx.RequestError as e:
                 print(f"Request error: {e}")
-                messagebox.showerror("Error", f"Request error: {e}. Retrying...")
+                ft.MessageDialog(title="Error", content=f"Request error: {e}. Retrying...").open()
             except httpx.HTTPStatusError as e:
                 print(f"HTTP status error: {e}")
-                messagebox.showerror("Error", f"HTTP status error: {e}. Retrying...")
+                ft.MessageDialog(title="Error", content=f"HTTP status error: {e}. Retrying...").open()
             except Exception as e:
                 print(f"Unexpected error: {e}")
-                messagebox.showerror("Error", f"Unexpected error: {e}. Retrying...")
-            time.sleep(2)
+                ft.MessageDialog(title="Error", content=f"Unexpected error: {e}. Retrying...").open()
+            await asyncio.sleep(2)
         return False
 
     def request_captcha(self, username, captcha_id):
         """Request a captcha image for processing."""
         session = self.accounts[username].get('session')
         if not session:
-            messagebox.showerror("Error", f"No session found for user {username}")
+            ft.MessageDialog(title="Error", content=f"No session found for user {username}").open()
             return
 
         # Send OPTIONS request before the GET request
-        try:
-            options_url = f"https://api.ecsc.gov.sy:8080/rs/reserve?id={captcha_id}&captcha=0"
-            session.options(options_url)
-        except httpx.RequestError as e:
-            messagebox.showerror("Error", f"Failed to send OPTIONS request: {e}")
-            return
+        async def async_request_captcha():
+            try:
+                options_url = f"https://api.ecsc.gov.sy:8080/rs/reserve?id={captcha_id}&captcha=0"
+                await session.options(options_url)
+            except httpx.RequestError as e:
+                ft.MessageDialog(title="Error", content=f"Failed to send OPTIONS request: {e}").open()
+                return
 
-        # Send GET request to retrieve the captcha image
-        captcha_data = self.get_captcha(session, captcha_id)
-        if captcha_data:
-            self.show_captcha(captcha_data, username, captcha_id)
-        else:
-            if self.last_status_code == 403:  # Session expired
-                messagebox.showinfo("Session expired", f"Session expired for user {username}. Re-logging in...")
-                if self.login(username, self.accounts[username]['password'], session):
-                    messagebox.showinfo("Re-login successful", f"Re-login successful for user {username}. Please request the captcha again.")
-                else:
-                    messagebox.showerror("Re-login failed", f"Re-login failed for user {username}. Please check credentials.")
+            # Send GET request to retrieve the captcha image
+            captcha_data = await self.get_captcha(session, captcha_id)
+            if captcha_data:
+                self.show_captcha(captcha_data, username, captcha_id)
             else:
-                messagebox.showerror("Error", f"Failed to get captcha. Status code: {self.last_status_code}, "
-                                              f"Response: {self.last_response_text}")
+                if self.last_status_code == 403:  # Session expired
+                    ft.MessageDialog(title="Session expired", content=f"Session expired for user {username}. Re-logging in...").open()
+                    if await self.login(username, self.accounts[username]['password'], session):
+                        ft.MessageDialog(title="Re-login successful", content=f"Re-login successful for user {username}. Please request the captcha again.").open()
+                    else:
+                        ft.MessageDialog(title="Re-login failed", content=f"Re-login failed for user {username}. Please check credentials.").open()
+                else:
+                    ft.MessageDialog(title="Error", content=f"Failed to get captcha. Status code: {self.last_status_code}, Response: {self.last_response_text}").open()
 
-    def get_captcha(self, session, captcha_id):
+        asyncio.create_task(async_request_captcha())
+
+    async def get_captcha(self, session, captcha_id):
         """Retrieve the captcha image data."""
         try:
             captcha_url = f"https://api.ecsc.gov.sy:8080/files/fs/captcha/{captcha_id}"
-            response = session.get(captcha_url)
+            response = await session.get(captcha_url)
 
             self.last_status_code = response.status_code
             self.last_response_text = response.text
@@ -200,77 +181,63 @@ class CaptchaApp:
                 response_data = response.json()
                 return response_data.get('file')
         except Exception as e:
-            messagebox.showerror("Error", f"Failed to get captcha: {e}")
+            ft.MessageDialog(title="Error", content=f"Failed to get captcha: {e}").open()
         return None
 
     def show_captcha(self, captcha_data, username, captcha_id):
-        """Display the captcha image for user input using PIL."""
-        try:
-            if self.captcha_frame:
-                self.captcha_frame.destroy()
+        """Display the captcha image for user input using Flet."""
+        async def async_show_captcha():
+            try:
+                captcha_base64 = captcha_data.split(",")[1] if ',' in captcha_data else captcha_data
+                captcha_image_data = base64.b64decode(captcha_base64)
 
-            captcha_base64 = captcha_data.split(",")[1] if ',' in captcha_data else captcha_data
-            captcha_image_data = base64.b64decode(captcha_base64)
+                with open("captcha.jpg", "wb") as f:
+                    f.write(captcha_image_data)
 
-            with open("captcha.jpg", "wb") as f:
-                f.write(captcha_image_data)
+                captcha_image = cv2.imread("captcha.jpg")
+                processed_image = self.process_captcha(captcha_image)
 
-            captcha_image = cv2.imread("captcha.jpg")
-            processed_image = self.process_captcha(captcha_image)
+                # Resize the image to 110x60
+                processed_image = cv2.resize(processed_image, (110, 60))
 
-            # Resize the image to 150x80
-            processed_image = cv2.resize(processed_image, (150, 80))
+                # Convert all black pixels to white
+                processed_image[np.all(processed_image == [0, 0, 0], axis=-1)] = [255, 255, 255]
 
-            # Convert all black pixels to white
-            processed_image[np.all(processed_image == [0, 0, 0], axis=-1)] = [255, 255, 255]
+                # Convert processed image to Flet Image format
+                _, encoded_image = cv2.imencode('.jpg', processed_image)
+                captcha_image_flet = ft.Image(src_base64=base64.b64encode(encoded_image).decode('utf-8'))
 
-            # Display captcha in tkinter
-            image_pil = Image.fromarray(cv2.cvtColor(processed_image, cv2.COLOR_BGR2RGB))
-            image_pil.thumbnail((400, 400))
+                # Now perform OCR processing
+                img_array = np.array(processed_image)
+                
+                # تحسين الأداء من خلال تحديد أقصى عدد للأحرف المراد التعرف عليها
+                predictions = reader.readtext(img_array, detail=0, allowlist='0123456789+-*/')
 
-            self.captcha_frame = tk.Frame(self.root)
-            self.captcha_frame.pack()
+                # Correct the OCR output with our custom function
+                corrected_text, highlighted_image = self.correct_and_highlight(predictions, img_array)
 
-            captcha_image_tk = ImageTk.PhotoImage(image_pil)
-            captcha_label = tk.Label(self.captcha_frame, image=captcha_image_tk)
-            captcha_label.image = captcha_image_tk
-            captcha_label.grid(row=0, column=0, padx=10, pady=10)
+                captcha_solution = self.solve_captcha(corrected_text)
 
-            # Create the text entry for OCR output
-            ocr_output_entry = tk.Entry(self.captcha_frame, width=40)
-            ocr_output_entry.grid(row=0, column=1, padx=10, pady=10)
+                ocr_output_text = ft.TextField(value=corrected_text, label="OCR Output")
+                captcha_entry = ft.TextField(value=captcha_solution, label="Captcha Input")
 
-            # Create the text entry for corrected captcha input
-            captcha_entry = tk.Entry(self.captcha_frame)
-            captcha_entry.grid(row=1, column=0, padx=10, pady=10)
+                submit_button = ft.ElevatedButton(
+                    text="Submit Captcha",
+                    on_click=lambda e: self.submit_captcha(username, captcha_id, captcha_entry.value)
+                )
 
-            submit_button = tk.Button(self.captcha_frame, text="Submit Captcha", command=lambda: threading.Thread(target=self.submit_captcha, args=(username, captcha_id, captcha_entry.get())).start())
-            submit_button.grid(row=1, column=1, padx=10, pady=10)
+                self.page.controls.append(ft.Column([
+                    captcha_image_flet,
+                    ocr_output_text,
+                    captcha_entry,
+                    submit_button
+                ]))
+                self.update()
 
-            # Now perform OCR processing
-            img_array = np.array(processed_image)
-            
-            # تحسين الأداء من خلال تحديد أقصى عدد للأحرف المراد التعرف عليها
-            predictions = reader.readtext(img_array, detail=0, allowlist='0123456789+-*/')
+            except Exception as e:
+                ft.MessageDialog(title="Error", content=f"Failed to show captcha: {e}").open()
 
-            # Correct the OCR output with our custom function
-            corrected_text, highlighted_image = self.correct_and_highlight(predictions, img_array)
-
-            captcha_solution = self.solve_captcha(corrected_text)
-
-            # Update the OCR output entry with the recognized text
-            ocr_output_entry.delete(0, tk.END)  # Clear previous text
-            ocr_output_entry.insert(0, corrected_text)  # Insert OCR result
-
-            # Update the entry with OCR result
-            captcha_entry.delete(0, tk.END)  # Clear previous text
-            captcha_entry.insert(0, captcha_solution)  # Insert solved captcha
-
-            # Bind event to learn from corrected input
-            captcha_entry.bind("<Return>", lambda event: self.learn_from_correction(corrected_text, captcha_entry.get()))
-
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to show captcha: {e}")
+        asyncio.create_task(async_show_captcha())
 
     def process_captcha(self, captcha_image):
         """Apply advanced image processing to remove the background using added backgrounds while keeping original colors."""
@@ -331,34 +298,36 @@ class CaptchaApp:
         """Submit the captcha solution to the server."""
         session = self.accounts[username].get('session')
         if not session:
-            messagebox.showerror("Error", f"No session found for user {username}")
+            ft.MessageDialog(title="Error", content=f"No session found for user {username}").open()
             return
 
         # Send OPTIONS request before the GET request
-        try:
-            options_url = f"https://api.ecsc.gov.sy:8080/rs/reserve?id={captcha_id}&captcha={captcha_solution}"
-            session.options(options_url)
-        except httpx.RequestError as e:
-            messagebox.showerror("Error", f"Failed to send OPTIONS request: {e}")
-            return
+        async def async_submit_captcha():
+            try:
+                options_url = f"https://api.ecsc.gov.sy:8080/rs/reserve?id={captcha_id}&captcha={captcha_solution}"
+                await session.options(options_url)
+            except httpx.RequestError as e:
+                ft.MessageDialog(title="Error", content=f"Failed to send OPTIONS request: {e}").open()
+                return
 
-        # Send GET request to submit the captcha solution
-        try:
-            get_url = f"https://api.ecsc.gov.sy:8080/rs/reserve?id={captcha_id}&captcha={captcha_solution}"
-            response = session.get(get_url)
+            # Send GET request to submit the captcha solution
+            try:
+                get_url = f"https://api.ecsc.gov.sy:8080/rs/reserve?id={captcha_id}&captcha={captcha_solution}"
+                response = await session.get(get_url)
 
-            if response.status_code == 200:
-                response_data = response.json()
-                if 'message' in response_data:
-                    messagebox.showinfo("Success", response_data['message'])
+                if response.status_code == 200:
+                    response_data = response.json()
+                    if 'message' in response_data:
+                        ft.MessageDialog(title="Success", content=response_data['message']).open()
+                    else:
+                        ft.MessageDialog(title="Success", content="Captcha submitted successfully!").open()
                 else:
-                    messagebox.showinfo("Success", "Captcha submitted successfully!")
-            else:
-                messagebox.showerror("Error", f"Failed to submit captcha. Status code: {response.status_code}, "
-                                              f"Response: {response.text}")
+                    ft.MessageDialog(title="Error", content=f"Failed to submit captcha. Status code: {response.status_code}, Response: {response.text}").open()
 
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to submit captcha: {e}")
+            except Exception as e:
+                ft.MessageDialog(title="Error", content=f"Failed to submit captcha: {e}").open()
+
+        asyncio.create_task(async_submit_captcha())
 
     @staticmethod
     def generate_headers(user_agent):
@@ -413,23 +382,12 @@ class CaptchaApp:
                 corrected_char = corrections.get(char, char)
                 if corrected_char.isdigit():
                     corrected_text += corrected_char
-                    self.highlight_element(image, corrected_char, num_color)  # Highlight numbers
                 elif corrected_char in "+-*xX×":
                     corrected_text += corrected_char
-                    self.highlight_element(image, corrected_char, op_color)  # Highlight operators
                 else:
                     corrected_text += corrected_char  # Non-highlighted
 
         return corrected_text, image
-
-    def highlight_element(self, image, element, color):
-        """Highlight elements (numbers/operators) in the image."""
-        reader_result = reader.readtext(image)
-        for bbox, text, _ in reader_result:
-            if element in text:
-                # Draw rectangle around the element
-                top_left, bottom_right = tuple(map(int, bbox[0])), tuple(map(int, bbox[2]))
-                cv2.rectangle(image, top_left, bottom_right, color, 2)
 
     def learn_from_correction(self, original_text, corrected_text):
         """Learn from user correction and store the correction in a file."""
@@ -485,8 +443,9 @@ class CaptchaApp:
 
         return None
 
+def main(page):
+    app = CaptchaApp()
+    page.add(app)
 
 if __name__ == "__main__":
-    root = tk.Tk()
-    app = CaptchaApp(root)
-    root.mainloop()
+    ft.app(target=main)
