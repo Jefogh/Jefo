@@ -11,17 +11,17 @@ jobs:
 
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4  # تحديث إلى الإصدار الأحدث
 
     - name: Set up Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5  # تحديث إلى الإصدار الأحدث
       with:
         python-version: '3.10'
 
-    - name: Install Node.js
-      uses: actions/setup-node@v4
+    - name: Set up Node.js
+      uses: actions/setup-node@v4  # يستخدم الإصدار الأحدث المتوافق مع Node.js 20
       with:
-        node-version: '18'
+        node-version: '20'
 
     - name: Install dependencies
       run: |
