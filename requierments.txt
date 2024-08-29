@@ -1,0 +1,6 @@
+flet
+opencv-python
+numpy
+Pillow
+httpx
+easyocr
